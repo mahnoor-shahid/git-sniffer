@@ -12,5 +12,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     fetcher = GitHubRepoFetcher(args.token)
-    urls = fetcher.fetch_repos(args.search, args.max_repos)
-    print(f"Number of URLs loaded: {len(urls)}")
+    fetcher.fetch_repos(args.search, args.max_repos)
+    print(f"Number of URLs loaded: {len(fetcher.urls)}")
