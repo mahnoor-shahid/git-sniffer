@@ -36,24 +36,24 @@ class GitHubRepoFetcher:
 
 
     def fetch_repos(self, search_terms, max_repos):
-        for term in search_terms:
-            query = term.strip()
-            params = {
-                "q": query,
-                "sort": "stars",
-                "order": "desc"
-            }
-            
-            metadata_dir = os.path.join(self.data_dir, 'metadata')
-            if not os.path.exists(metadata_dir):
-                os.makedirs(metadata_dir)
+        # Create a single CSV file for all search terms
+        metadata_dir = os.path.join(self.data_dir, 'metadata')
+        if not os.path.exists(metadata_dir):
+            os.makedirs(metadata_dir)
 
-            term_csv_filename = os.path.join(metadata_dir, f'{query.replace(" ", "_")}_metadata.csv')
-            file_exists = os.path.isfile(term_csv_filename)
+        combined_csv_filename = os.path.join(metadata_dir, 'combined_metadata.csv')
+        file_exists = os.path.isfile(combined_csv_filename)
 
-            with open(term_csv_filename, 'a', newline='', encoding='utf-8') as csvfile:
-                writer = None
-                pbar = None
+        with open(combined_csv_filename, 'a', newline='', encoding='utf-8') as csvfile:
+            writer = None
+
+            for term in search_terms:
+                query = term.strip()
+                params = {
+                    "q": query,
+                    "sort": "stars",
+                    "order": "desc"
+                }
 
                 page = 1
                 fetched_urls = 0
@@ -73,49 +73,65 @@ class GitHubRepoFetcher:
 
                             # Dynamically get all metadata keys
                             if writer is None:
-                                fieldnames = list(item.keys())
+                                fieldnames = list(item.keys()) + ['params']
                                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                                 if not file_exists:
                                     writer.writeheader()
 
+                            # Add the search term to the item data
+                            item['params'] = params
+
                             # Write the repository metadata
                             writer.writerow(item)
-                            pbar.update(1)
                             fetched_urls += 1
-                        
+                            pbar.update(1)
+
                         if fetched_urls >= max_repos:
                             break
                     page += 1
 
                 pbar.close()
 
-            # Call the function to structure the metadata for each file
-            structure_metadata(term_csv_filename, search_term=term)
+        structure_metadata(combined_csv_filename)
 
 
-    def get_readme(self):
-        readme_directory = os.path.join(os.getcwd(), 'data', 'readme')
-        if not os.path.exists(readme_directory):
-            os.makedirs(readme_directory)
-        
-        for url in self.urls:
-            repo_name = url.split('/')[-1].replace('.git', '')  # remove .git if present
-            repo_path = os.path.join(readme_directory, repo_name)
+    def fetch_readme(self, readme_flag):
+        self.readme_flag = readme_flag
+        if self.readme_flag:
+            self.readme_directory = os.path.join(os.getcwd(), 'data', 'readme')
+            if not os.path.exists(self.readme_directory):
+                os.makedirs(self.readme_directory)
             
-            if not os.path.exists(repo_path):
-                os.makedirs(repo_path)
+            readme_variants = ['README.md', 'README.rst', 'README.txt', 'README']
             
-            readme_path = os.path.join(repo_path, 'README.md')
-            
-            if not os.path.exists(readme_path):
-                # Using sparse checkout to only clone the README file
-                subprocess.run(['git', 'init'], cwd=repo_path)
-                subprocess.run(['git', 'remote', 'add', 'origin', url], cwd=repo_path)
-                subprocess.run(['git', 'config', 'core.sparseCheckout', 'true'], cwd=repo_path)
-                with open(os.path.join(repo_path, '.git', 'info', 'sparse-checkout'), 'w') as f:
-                    f.write('README.md\n')
-                subprocess.run(['git', 'pull', 'origin', 'main'], cwd=repo_path)  # Assumes the main branch is 'main'
+            for url in self.urls:
+                repo_owner, repo_name = self._parse_github_url(url)
+                
+                for readme_variant in readme_variants:
+                    readme_url = f'https://raw.githubusercontent.com/{repo_owner}/{repo_name}/main/{readme_variant}'
+                    response = requests.get(readme_url)
 
+                    if response.status_code == 404:
+                        # Try with 'master' if 'main' branch doesn't exist
+                        readme_url = f'https://raw.githubusercontent.com/{repo_owner}/{repo_name}/master/{readme_variant}'
+                        response = requests.get(readme_url)
+
+                    if response.status_code == 200:
+                        self._save_readme(repo_owner, repo_name, response.text)
+                        print(f"Successfully fetched {readme_variant} for {repo_name}")
+                        break
+                else:
+                    print(f"Failed to fetch any README for {repo_name}")
+
+
+    def _parse_github_url(self, url):
+        parts = url.rstrip('/').split('/')
+        return parts[-2], parts[-1]
+
+    def _save_readme(self, repo_owner, repo_name, content):
+        readme_path = os.path.join(self.readme_directory, f'{repo_owner}++{repo_name}_README.md')
+        with open(readme_path, 'w', encoding='utf-8') as file:
+            file.write(content)
 
     def clone_repositories(self):
         repos_directory = os.path.join(os.getcwd(), 'data', 'repos')
@@ -127,6 +143,11 @@ class GitHubRepoFetcher:
             if not os.path.exists(repo_path):
                 subprocess.run(['git', 'clone', url, repo_path])
 
-    # Example usage:
-    # clone_repositories(urls, '/path/to/save/repos')
+    def analyze(self, analyze_flag):
+        self.analyze_flag = analyze_flag
+        if self.analyze_flag:
+            self.analysis_directory = os.path.join(os.getcwd(), 'data', 'analysis')
+            if not os.path.exists(self.analysis_directory):
+                os.makedirs(self.analysis_directory)
+            
 
