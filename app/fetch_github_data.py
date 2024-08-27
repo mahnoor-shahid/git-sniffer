@@ -118,12 +118,14 @@ class GitHubRepoFetcher:
 
 
     def clone_repositories(self):
-        current_directory = os.path.join(os.getcwd(), 'repos')
+        repos_directory = os.path.join(os.getcwd(), 'data', 'repos')
+        if not os.path.exists(repos_directory):
+            os.makedirs(repos_directory)
         for url in self.urls:
             repo_name = url.split('/')[-1]
-            repo_path = os.path.join(current_directory, repo_name)
+            repo_path = os.path.join(repos_directory, repo_name)
             if not os.path.exists(repo_path):
-                subprocess.run([r'C:\\Program Files\\Git\\bin\\git.exe', 'clone', url, repo_path])
+                subprocess.run(['git', 'clone', url, repo_path])
 
     # Example usage:
     # clone_repositories(urls, '/path/to/save/repos')
