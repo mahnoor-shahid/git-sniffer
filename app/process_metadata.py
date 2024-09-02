@@ -17,7 +17,7 @@ def structure_metadata(input_file):
             table_data.append([
                 row['params'],
                 row['name'],
-                row['owner'].split("'login': '")[1].split("'")[0],
+                row['full_name'],
                 row['html_url'],
                 row['description'],
                 row['stargazers_count'],
@@ -33,7 +33,7 @@ def structure_metadata(input_file):
             ])
 
     # Define the headers for the table
-    headers = ["Search Query", "Repository Name", "Owner", "URL", "Description", "Stars", "Forks", "Language", "Issues", "Created At", "Updated At", "Default Branch", "License", "Topics", "Private"]
+    headers = ["Search Query", "Repository Name", "full_name", "URL", "Description", "Stars", "Forks", "Language", "Issues", "Created At", "Updated At", "Default Branch", "License", "Topics", "Private"]
 
     # Format the table using tabulate
     formatted_table = tabulate(table_data, headers=headers, tablefmt='pipe', stralign='center')
@@ -41,8 +41,6 @@ def structure_metadata(input_file):
     # Save the formatted table to a text file
     with open(output_file_txt, mode='w', encoding='utf-8') as file:
         file.write(formatted_table)
-
-    print("\nMetadata successfully saved!")
 
 '''
     # Save the structured data to a CSV file
