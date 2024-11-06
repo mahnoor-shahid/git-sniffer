@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/data/IAMDinosaur" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/data/applied-computational-genomics" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/data/bottom-up-attention" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/data/deepvariant" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/data/gatk" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/data/getting-started-with-genomics-tools-and-resources" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/data/rnaseq_tutorial" vcs="Git" />
+  </component>
+</project>
