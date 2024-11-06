@@ -40,25 +40,19 @@ if __name__ == '__main__':
 
     fetcher = GitHubRepoFetcher(args.token)
     fetcher.fetch_repos(args.search, args.max_repos)
-<<<<<<< HEAD
+
     print(f"Number of URLs loaded: {len(fetcher.urls)}")
-    fetcher.clone_repositories()
-=======
-    fetcher.fetch_contributors()
-    fetcher.fetch_commits()
-    fetcher.fetch_releases()
+    # fetcher.clone_repositories()
+    # fetcher.fetch_stargazers()
+    # fetcher.fetch_forks()
+    # fetcher.fetch_subscribers()
+    # fetcher.fetch_releases()
     fetcher.fetch_issues()
     fetcher.fetch_pulls()
-    fetcher.fetch_stargazers()
-    fetcher.fetch_forks()
-    fetcher.fetch_subscribers()
-    fetcher.fetch_readme(args.readme)
+    fetcher.fetch_commits()
+    fetcher.fetch_contributors()
+    # fetcher.fetch_readme(args.readme)
     # fetcher.clone_repositories()
     print(f"Number of Repositories Processed: {len(fetcher.urls)}")
     fetcher.analyze(args.analyze)
 
-
-
-
-
->>>>>>> e5461d48f3967a5d4805147f87f4d9879e033ef8
