@@ -8,8 +8,9 @@ from app.process_metadata import structure_metadata
 from app.text_segments_transformers import generate_summary, extract_topics_from_summaries
 
 class GitHubRepoFetcher:
-    def __init__(self, token):
+    def __init__(self, token, readme_flag):
         self.token = token
+        self.readme_flag = readme_flag
         self.base_url = "https://api.github.com/search/repositories"
         self.headers = {'Authorization': f'token {self.token}'}
         self.graphql_url = 'https://api.github.com/graphql'
@@ -120,30 +121,78 @@ class GitHubRepoFetcher:
 
         structure_metadata(combined_csv_filename)
 
-    def fetch_readme(self, readme_flag):
-        self.readme_flag = readme_flag
-        if self.readme_flag:
-            readme_variants = ['README.md', 'README.rst', 'README.txt', 'README']
-            
-            for url in self.urls:
-                repo_owner, repo_name = self._parse_github_url(url)
-                
-                for readme_variant in readme_variants:
-                    readme_url = f'https://raw.githubusercontent.com/{repo_owner}/{repo_name}/main/{readme_variant}'
-                    response = requests.get(readme_url)
+    def _save_readme(self, repo_owner, repo_name, readme_content):
+            """Helper function to save the fetched README content to a file."""
+            file_name = f"{repo_owner}++{repo_name}_README.md"
+            readme_path = os.path.join(self.metadata_dir, file_name)
+            with open(readme_path, 'w', encoding='utf-8') as file:
+                file.write(readme_content)
+            print(f"README saved for {repo_name} to {readme_path}")
 
-                    if response.status_code == 404:
-                        # Try with 'master' if 'main' branch doesn't exist
-                        readme_url = f'https://raw.githubusercontent.com/{repo_owner}/{repo_name}/master/{readme_variant}'
-                        response = requests.get(readme_url)
+    def fetch_readme(self):
+            """Fetch README file content using GitHub GraphQL API."""
+            if self.readme_flag:
+                readme_variants = ['README.md', 'README.rst', 'README.txt', 'README']
 
-                    if response.status_code == 200:
-                        self._save_readme(repo_owner, repo_name, response.text)
-                        print(f"Successfully fetched {readme_variant} for {repo_name}")
-                        break
-                else:
-                    print(f"Failed to fetch any README for {repo_name}")
+                for url in self.urls:
+                    repo_owner, repo_name = self._parse_github_url(url)
 
+                    # Initialize pagination variables for readme
+                    has_next_page = True
+                    end_cursor = None
+
+                    for readme_variant in readme_variants:
+                        readme_content = None
+
+                        # GraphQL query to fetch the README content
+                        query = '''
+                        query($owner: String!, $name: String!, $readme_variant: String!) {
+                            repository(owner: $owner, name: $name) {
+                                object(expression: "main:$readme_variant") {  # Using "main" branch here
+                                    ... on Blob {
+                                        text
+                                    }
+                                }
+                            }
+                        }
+                        '''
+
+                        variables = {
+                            'owner': repo_owner,
+                            'name': repo_name,
+                            'readme_variant': readme_variant
+                        }
+
+                        # Execute the GraphQL request
+                        response = requests.post(
+                            'https://api.github.com/graphql',
+                            json={'query': query, 'variables': variables},
+                            headers=self.headers
+                        )
+
+                        if response.status_code == 200:
+                            data = response.json()
+
+                            # Check if 'data' is in the response
+                            if 'data' in data and 'repository' in data['data']:
+                                readme_content = data['data']['repository']['object']
+                                if readme_content and 'text' in readme_content:
+                                    self._save_readme(repo_owner, repo_name, readme_content['text'])
+                                    print(f"Successfully fetched {readme_variant} for {repo_name}")
+                                    break
+                                else:
+                                    print(f"README variant {readme_variant} not found for {repo_name}")
+                            else:
+                                print(f"No data found for {repo_name}. Response: {data}")
+                        else:
+                            print(f"Failed to fetch README for {repo_name} with status code {response.status_code}")
+
+                        if readme_content:
+                            break
+                    else:
+                        print(f"Failed to fetch any README for {repo_name}")
+
+                        
     def _parse_github_url(self, url):
         parts = url.rstrip('/').split('/')
         return parts[-2], parts[-1]
