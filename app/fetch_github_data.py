@@ -163,15 +163,9 @@ class GitHubRepoFetcher:
             if not os.path.exists(repo_path):
                 subprocess.run(['git', 'clone', url, repo_path])
 
-
     def fetch_contributors(self):
-        """Fetch contributors for each repository, including the number of commits and PRs, and save to a CSV file."""
+        """Fetch contributors for each repository and save to a CSV file named as owner++reponame.csv."""
         metadata_file = os.path.join(self.metadata_dir, 'combined_metadata.csv')
-
-        # Ensure that commit_counts and pr_counts are not empty before proceeding
-        if not self.commit_counts or not self.pr_counts:
-            print("Error: Commit counts or PR counts are missing.")
-            return  # Exit early if required data is missing
 
         with open(metadata_file, newline='', encoding='utf-8') as metadata_csv:
             reader = csv.DictReader(metadata_csv)
@@ -182,96 +176,48 @@ class GitHubRepoFetcher:
                 file_name = f"{repo_owner}++{repo_name}.csv"
                 contributors_filename = os.path.join(self.contributors_dir, file_name)
 
-                # Get commit and PR counts from the dictionaries, defaulting to 0 if missing
-                commit_counts = self.commit_counts.get(f"{repo_owner}-{repo_name}", {})
-                pr_counts = self.pr_counts.get(f"{repo_owner}-{repo_name}", {})
+                contributors_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contributors"
+                contributors = []
+                page = 1
 
-                # GraphQL query to fetch collaborators
-                contributors_query = """
-                query($owner: String!, $name: String!) {
-                    repository(owner: $owner, name: $name) {
-                        collaborators(first: 100) {
-                            edges {
-                                node {
-                                    login
-                                    name
-                                    avatarUrl
-                                    bio
-                                    location
-                                    company
-                                }
-                            }
-                        }
-                    }
-                }
-                """
-                variables = {'owner': repo_owner, 'name': repo_name}
-                response = requests.post(
-                    'https://api.github.com/graphql',
-                    json={'query': contributors_query, 'variables': variables},
-                    headers=self.headers
-                )
+                while True:
+                    response = requests.get(contributors_api_url, headers=self.headers, params={'page': page, 'per_page': 100})
+                    
+                    if response.status_code == 200:
+                        page_contributors = response.json()
 
-                if response.status_code == 200:
-                    data = response.json()
-
-                    # Debugging: print the response to inspect its structure
-                    # print(f"Response for {repo_name}: {data}")
-
-                    if 'data' in data and 'repository' in data['data']:
-                        collaborators_data = data['data']['repository'].get('collaborators', None)
-
-                        if collaborators_data and 'edges' in collaborators_data:
-                            collaborators = collaborators_data['edges']
-
-                            # Open the CSV file to write the contributors' data
-                            with open(contributors_filename, 'w', newline='', encoding='utf-8') as contributors_csv:
-                                if collaborators:
-                                    fieldnames = [
-                                        'contributor_login', 'contributor_name', 'contributor_avatar',
-                                        'contributor_bio', 'contributor_location', 'contributor_company',
-                                        'contributor_commit_count', 'contributor_pr_count'
-                                    ]
-                                    writer = csv.DictWriter(contributors_csv, fieldnames=fieldnames)
-                                    writer.writeheader()
-
-                                    for collaborator in collaborators:
-                                        login = collaborator['node']['login']
-                                        contributor_name = collaborator['node'].get('name', 'N/A')
-                                        contributor_avatar = collaborator['node'].get('avatarUrl', 'N/A')
-                                        contributor_bio = collaborator['node'].get('bio', 'N/A')
-                                        contributor_location = collaborator['node'].get('location', 'N/A')
-                                        contributor_company = collaborator['node'].get('company', 'N/A')
-
-                                        # Get commit and PR counts from the dictionaries, default to 0 if login not found
-                                        commit_count = commit_counts.get(login, 0)
-                                        pr_count = pr_counts.get(login, 0)
-
-                                        # Write contributor data to CSV
-                                        contributor_data = {
-                                            'contributor_login': login,
-                                            'contributor_name': contributor_name,
-                                            'contributor_avatar': contributor_avatar,
-                                            'contributor_bio': contributor_bio,
-                                            'contributor_location': contributor_location,
-                                            'contributor_company': contributor_company,
-                                            'contributor_commit_count': commit_count,
-                                            'contributor_pr_count': pr_count
-                                        }
-                                        writer.writerow(contributor_data)
-                                else:
-                                    print(f"No collaborators found for {repo_name}")
-                        else:
-                            print(f"Error: No collaborator data found for {repo_name}")
+                        if not page_contributors:
+                            break  # No more contributors, exit loop
+                        
+                        contributors.extend(page_contributors)
+                        page += 1  # Move to the next page
                     else:
-                        print(f"Error: Failed to fetch valid contributor data for {repo_name}")
-                else:
-                    print(f"Failed to fetch contributors for {repo_name}: {response.status_code}")
+                        print(f"Failed to fetch contributors for {repo_name}: {response.status_code}")
+                        break  # Exit loop on failure
+                
+                # Open the CSV file to write the contributors' data
+                with open(contributors_filename, 'w', newline='', encoding='utf-8') as contributors_csv:
+                    if contributors:
+                        fieldnames = ['repo_owner', 'repo_name', 'contributor_login', 'contributions'] + list(contributors[0].keys())
+                        writer = csv.DictWriter(contributors_csv, fieldnames=fieldnames)
+                        writer.writeheader()
+
+                        for contributor in contributors:
+                            contributor_data = {
+                                'repo_owner': repo_owner,
+                                'repo_name': repo_name,
+                                'contributor_login': contributor.get('login'),
+                                'contributions': contributor.get('contributions')
+                            }
+                            contributor_data.update(contributor)
+                            writer.writerow(contributor_data)
+                    else:
+                        print(f"No contributors found for {repo_name}")
 
     def fetch_commits(self):
-        """Fetch commits for each repository and save to a CSV file named as owner++reponame.csv."""
+        """Fetch commits for each repository and save to a CSV file."""
         metadata_file = os.path.join(self.metadata_dir, 'combined_metadata.csv')
-        
+
         with open(metadata_file, newline='', encoding='utf-8') as metadata_csv:
             reader = csv.DictReader(metadata_csv)
 
@@ -282,82 +228,134 @@ class GitHubRepoFetcher:
                 commits_filename = os.path.join(self.commits_dir, file_name)
                 self.commit_counts[f"{repo_owner}-{repo_name}"] = {}
 
-                # GraphQL query to fetch commits from the repository
-                commits_query = """
+                # Initialize pagination variables
+                has_next_page = True
+                end_cursor = None
+
+                # Fetch the default branch of the repository (e.g., main or master)
+                default_branch_query = """
                 query($owner: String!, $name: String!) {
-                repository(owner: $owner, name: $name) {
-                    object(expression: "main") {  # Specify the branch here, e.g. "main"
-                    ... on Commit {
-                        history(first: 100) {
-                        edges {
-                            node {
-                            oid
-                            author {
-                                name
-                                email
-                                 user {
-                                    login  # You can get the user's GitHub login
-                                }
-                            }
-                            committedDate
-                            message
-                            }
-                        }
+                    repository(owner: $owner, name: $name) {
+                        defaultBranchRef {
+                            name
                         }
                     }
-                    }
-                }
                 }
                 """
-
                 variables = {'owner': repo_owner, 'name': repo_name}
                 response = requests.post(
                     'https://api.github.com/graphql',
-                    json={'query': commits_query, 'variables': variables},
+                    json={'query': default_branch_query, 'variables': variables},
                     headers=self.headers
                 )
 
                 if response.status_code == 200:
                     data = response.json()
-
-                    # Check if the repository and object are present in the response
-                if 'data' in data and 'repository' in data['data']:
-                    repository_object = data['data']['repository']['object']
-
-                    if repository_object is not None and 'history' in repository_object:
-                        commits = repository_object['history']['edges']
-
-                        if commits:
-                            # Update commit counts for contributors
-                            for commit in commits:
-                                author_login = commit['node']['author']['name']  # Replace with 'login' if needed
-                                if author_login not in self.commit_counts[f"{repo_owner}-{repo_name}"]:
-                                    self.commit_counts[f"{repo_owner}-{repo_name}"][author_login] = 0
-                                self.commit_counts[f"{repo_owner}-{repo_name}"][author_login] += 1
-
-                            # Save commits to a CSV file
-                            with open(commits_filename, 'w', newline='', encoding='utf-8') as commits_csv:
-                                fieldnames = ['commit_sha', 'commit_author_name', 'commit_author_email', 'commit_message', 'commit_date']
-                                writer = csv.DictWriter(commits_csv, fieldnames=fieldnames)
-                                writer.writeheader()
-
-                                for commit in commits:
-                                    commit_data = {
-                                        'commit_sha': commit['node']['oid'],
-                                        'commit_author_name': commit['node']['author']['name'],
-                                        'commit_author_email': commit['node']['author']['email'],
-                                        'commit_message': commit['node']['message'],
-                                        'commit_date': commit['node']['committedDate']
-                                    }
-                                    writer.writerow(commit_data)
-                        else:
-                            print(f"No commits found for {repo_name}")
+                    if 'data' in data and 'repository' in data['data']:
+                        default_branch = data['data']['repository']['defaultBranchRef']['name']
+                        #print(f"Default branch for {repo_name}: {default_branch}") ## Good for debugging
                     else:
-                        print(f"No commit history found for {repo_name}")
+                        print(f"Failed to fetch default branch for {repo_name}. Skipping...")
+                        continue
                 else:
-                    print(f"Failed to fetch commits for {repo_name}: Invalid response structure.")
-            else:
-                print(f"Failed to fetch commits for {repo_name}: {response.status_code}")
+                    print(f"Failed to fetch default branch for {repo_name}. Skipping...")
+                    continue
+
+                # GraphQL query to fetch commits from the repository
+                commits_query = """
+                query($owner: String!, $name: String!, $cursor: String, $branch: String!) {
+                    repository(owner: $owner, name: $name) {
+                        object(expression: $branch) {
+                            ... on Commit {
+                                history(first: 100, after: $cursor) {
+                                    edges {
+                                        node {
+                                            oid
+                                            author {
+                                                name
+                                                email
+                                                user {
+                                                    login
+                                                }
+                                            }
+                                            committedDate
+                                            message
+                                        }
+                                    }
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                """
+
+                # Loop through pages of commits until all commits are fetched
+                while has_next_page:
+                    variables = {'owner': repo_owner, 'name': repo_name, 'cursor': end_cursor, 'branch': default_branch}
+                    response = requests.post(
+                        'https://api.github.com/graphql',
+                        json={'query': commits_query, 'variables': variables},
+                        headers=self.headers
+                    )
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        if 'data' in data and 'repository' in data['data']:
+                            repository_object = data['data']['repository']['object']
+                            if repository_object and 'history' in repository_object:
+                                commits = repository_object['history']['edges']
+                                page_info = repository_object['history']['pageInfo']
+
+                                # Update commit counts for contributors
+                                for commit in commits:
+                                    author_login = commit['node']['author']['user']['login'] if commit['node']['author']['user'] else 'N/A'
+                                    author_name = commit['node']['author']['name'] if commit['node']['author'] else 'N/A'
+                                    if author_login:
+                                        if author_login not in self.commit_counts[f"{repo_owner}-{repo_name}"]:
+                                            self.commit_counts[f"{repo_owner}-{repo_name}"][author_login] = 0
+                                        self.commit_counts[f"{repo_owner}-{repo_name}"][author_login] += 1
+                                    else:
+                                        if author_name not in self.commit_counts[f"{repo_owner}-{repo_name}"]:
+                                            self.commit_counts[f"{repo_owner}-{repo_name}"][author_name] = 0
+                                        self.commit_counts[f"{repo_owner}-{repo_name}"][author_name] += 1
+                                
+
+
+                                # Save commits to CSV file
+                                with open(commits_filename, 'a', newline='', encoding='utf-8') as commits_csv:
+                                    fieldnames = ['commit_sha', 'commit_author_name', 'commit_author_email', 'commit_message', 'commit_date', 'login']
+                                    writer = csv.DictWriter(commits_csv, fieldnames=fieldnames)
+
+                                    if commits_csv.tell() == 0:  # Write header only if it's the first write
+                                        writer.writeheader()
+
+                                    for commit in commits:
+                                        commit_data = {
+                                            'commit_sha': commit['node']['oid'],
+                                            'commit_author_name': commit['node']['author']['name'],
+                                            'commit_author_email': commit['node']['author']['email'],
+                                            'commit_message': commit['node']['message'],
+                                            'commit_date': commit['node']['committedDate'],
+                                            'login': author_login
+                                        }
+                                        writer.writerow(commit_data)
+
+                                # Handle pagination: check if there are more commits to fetch
+                                has_next_page = page_info['hasNextPage']
+                                end_cursor = page_info['endCursor']
+                            else:
+                                print(f"No commit history found for {repo_name}")
+                                break
+                        else:
+                            print(f"Error: No commit data found for {repo_name}")
+                            break
+                    else:
+                        print(f"Failed to fetch commits for {repo_name}: {response.status_code}")
+                        break
 
     def fetch_releases(self):
         """Fetch detailed information about releases using GitHub GraphQL API."""
@@ -496,6 +494,9 @@ class GitHubRepoFetcher:
                                             url
                                             author {
                                                 login
+                                                    ... on User {
+                                                    name
+                                                }
                                             }
                                         }
                                     }
@@ -526,10 +527,17 @@ class GitHubRepoFetcher:
 
                                 # Update PR counts for contributors
                                 for pull in pull_edges:
-                                    pr_author_login = pull['node']['author']['login']
-                                    if pr_author_login not in self.pr_counts[f"{repo_owner}-{repo_name}"]:
-                                        self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_login] = 0
-                                    self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_login] += 1
+                                    pr_author_login = pull['node']['author']['login'] if pull['node']['author'] else 'N/A'
+                                    pr_author_name = pull['node']['author']['name'] if pull['node']['author'] else 'N/A'
+                                    if pr_author_login:
+                                        if pr_author_login not in self.pr_counts[f"{repo_owner}-{repo_name}"]:
+                                            self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_login] = 0
+                                        self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_login] += 1
+                                    else:
+                                        if pr_author_name not in self.pr_counts[f"{repo_owner}-{repo_name}"]:
+                                            self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_name] = 0
+                                        self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_name] += 1                               
+
 
                                 if not pull_writer:
                                     fieldnames = ['pull_number', 'title', 'state', 'created_at', 'updated_at', 'closed_at', 'merged_at', 'user', 'url']
