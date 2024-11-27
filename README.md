@@ -1,8 +1,30 @@
+<!-- ![GitHub](https://img.shields.io/github/license/mahnoor-shahid/git-sniffer?style=for-the-badge) -->
+<!-- ![GitHub Repo stars](https://img.shields.io/github/stars/mahnoor-shahid/git-sniffer?style=for-the-badge) -->
+<!-- ![GitHub forks](https://img.shields.io/github/forks/mahnoor-shahid/git-sniffer?style=for-the-badge) -->
+<!-- ![GitHub release (latest by date including pre-releases)](https://img.shields.io/github/v/release/mahnoor-shahid/git-sniffer?include_prereleases&style=for-the-badge) -->
+<!-- ![GitHub issues](https://img.shields.io/github/issues-raw/mahnoor-shahid/git-sniffer?style=for-the-badge) -->
+<!-- ![GitHub pull requests](https://img.shields.io/github/issues-pr/mahnoor-shahid/git-sniffer?style=for-the-badge) -->
 
-# **Git Sniffer**
+![GitHub](https://img.shields.io/github/license/mahnoor-shahid/git-sniffer)
+![GitHub Repo stars](https://img.shields.io/github/stars/mahnoor-shahid/git-sniffer)
+![GitHub forks](https://img.shields.io/github/forks/mahnoor-shahid/git-sniffer)
+![GitHub release (latest by date including pre-releases)](https://img.shields.io/github/v/release/mahnoor-shahid/git-sniffer?include_prereleases)
+<a href="https://github.com/mahnoor-shahid/git-sniffer" alt="python">
+        <img src="https://img.shields.io/badge/python-v3.9-brightgreen" /></a>
+<a href="https://github.com/mahnoor-shahid/git-sniffer" alt="numpy">
+        <img src="https://img.shields.io/badge/numpy-1.20.3-yellowgreen" /></a>
+<a href="https://github.com/mahnoor-shahid/git-sniffer" alt="pandas">
+        <img src="https://img.shields.io/badge/pandas-1.2.4-yellowgreen" /></a>
+<a href="https://github.com/mahnoor-shahid/git-sniffer" alt="dask">
+        <img src="https://img.shields.io/badge/dask-2022.05.02-red" /></a>  <a href="https://github.com/mahnoor-shahid/git-sniffer" alt="scikit-learn">
+        <img src="https://img.shields.io/badge/scikit--learn-1.2.1-yellowgreen" /></a>
 
-**Git Sniffer** is a Python package designed to fetch, analyze, and explore GitHub repository data with ease. Leveraging the power of GitHub's GraphQL API, Git Sniffer simplifies the process of retrieving critical repository insights, contributors' activity, and workflows for developers and researchers.
+<!-- ![GitHub issues](https://img.shields.io/github/issues-raw/mahnoor-shahid/git-sniffer) -->
+<!--![GitHub pull requests](https://img.shields.io/github/issues-pr/mahnoor-shahid/git-sniffer) -->
 
+# **git-sniffer: a lightweight python package for fetching and analyzing github data**
+
+> **Git Sniffer** is a user-friendly python package designed to simplify GitHub data collection and streamline the process of retrieving critical repository insights, using the powerful GraphQL API. It supports fetching repositories, stars, forks, contributors, commits, and more to explore GitHub activity of selected repositories and analyze with ease. Git Sniffer ensures precise and flexible querying, making it ideal for developers, researchers, and data analysts looking to gain insights into open-source projects and workflows.
 ---
 
 ## **Features**
