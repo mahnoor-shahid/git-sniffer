@@ -3,7 +3,6 @@ import sys
 import nltk
 import os
 
-
 from app.fetch_github_data import GitHubRepoFetcher
 
 if __name__ == '__main__':
