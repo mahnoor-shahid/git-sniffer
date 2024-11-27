@@ -2,5 +2,8 @@ __pycache__/
 .ipynb_checkpoints/
 .docker/
 .git
+.vscode/
 data/*
-backup/
+models/*
+experiments/*
+app/__pycache__/*

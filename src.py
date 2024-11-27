@@ -37,22 +37,20 @@ if __name__ == '__main__':
             print("Exiting: README files are required for analysis.")
             sys.exit(1)
 
-    fetcher = GitHubRepoFetcher(args.token)
+    fetcher = GitHubRepoFetcher(args.token, args.readme)
     fetcher.fetch_repos(args.search, args.max_repos)
-    fetcher.fetch_contributors()
-    fetcher.fetch_commits()
-    fetcher.fetch_releases()
-    fetcher.fetch_issues()
-    fetcher.fetch_pulls()
-    fetcher.fetch_stargazers()
-    fetcher.fetch_forks()
-    fetcher.fetch_subscribers()
-    fetcher.fetch_readme(args.readme)
+
+    print(f"Number of URLs loaded: {len(fetcher.urls)}")
+    # fetcher.fetch_stargazers()
+    # fetcher.fetch_forks()
+    # fetcher.fetch_subscribers()
+    # fetcher.fetch_releases()
+    # fetcher.fetch_issues()
+    # fetcher.fetch_pulls()
+    # fetcher.fetch_commits()
+    # fetcher.fetch_contributors()
+    # fetcher.fetch_readme()
     # fetcher.clone_repositories()
     print(f"Number of Repositories Processed: {len(fetcher.urls)}")
-    fetcher.analyze(args.analyze)
-
-
-
-
+    # fetcher.analyze(args.analyze)
 

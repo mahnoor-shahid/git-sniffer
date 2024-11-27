@@ -8,13 +8,16 @@ from app.process_metadata import structure_metadata
 from app.text_segments_transformers import generate_summary, extract_topics_from_summaries
 
 class GitHubRepoFetcher:
-    def __init__(self, token):
+    def __init__(self, token, readme_flag):
         self.token = token
+        self.readme_flag = readme_flag
         self.base_url = "https://api.github.com/search/repositories"
         self.headers = {'Authorization': f'token {self.token}'}
+        self.graphql_url = 'https://api.github.com/graphql'
         self.urls = set()
         self.data_dir = os.path.join(os.getcwd(), 'data')
-        
+        self.pr_counts = {}  # Dictionary to store PR count per contributor
+        self.commit_counts = {}  # Dictionary to store commit count per contributor
         self.metadata_dir = os.path.join(self.data_dir, 'metadata')
         self.contributors_dir = os.path.join(self.data_dir, 'contributors')
         self.commits_dir = os.path.join(self.data_dir, 'commits')
@@ -118,30 +121,78 @@ class GitHubRepoFetcher:
 
         structure_metadata(combined_csv_filename)
 
-    def fetch_readme(self, readme_flag):
-        self.readme_flag = readme_flag
-        if self.readme_flag:
-            readme_variants = ['README.md', 'README.rst', 'README.txt', 'README']
-            
-            for url in self.urls:
-                repo_owner, repo_name = self._parse_github_url(url)
-                
-                for readme_variant in readme_variants:
-                    readme_url = f'https://raw.githubusercontent.com/{repo_owner}/{repo_name}/main/{readme_variant}'
-                    response = requests.get(readme_url)
+    def _save_readme(self, repo_owner, repo_name, readme_content):
+            """Helper function to save the fetched README content to a file."""
+            file_name = f"{repo_owner}++{repo_name}_README.md"
+            readme_path = os.path.join(self.metadata_dir, file_name)
+            with open(readme_path, 'w', encoding='utf-8') as file:
+                file.write(readme_content)
+            print(f"README saved for {repo_name} to {readme_path}")
 
-                    if response.status_code == 404:
-                        # Try with 'master' if 'main' branch doesn't exist
-                        readme_url = f'https://raw.githubusercontent.com/{repo_owner}/{repo_name}/master/{readme_variant}'
-                        response = requests.get(readme_url)
+    def fetch_readme(self):
+            """Fetch README file content using GitHub GraphQL API."""
+            if self.readme_flag:
+                readme_variants = ['README.md', 'README.rst', 'README.txt', 'README']
 
-                    if response.status_code == 200:
-                        self._save_readme(repo_owner, repo_name, response.text)
-                        print(f"Successfully fetched {readme_variant} for {repo_name}")
-                        break
-                else:
-                    print(f"Failed to fetch any README for {repo_name}")
+                for url in self.urls:
+                    repo_owner, repo_name = self._parse_github_url(url)
 
+                    # Initialize pagination variables for readme
+                    has_next_page = True
+                    end_cursor = None
+
+                    for readme_variant in readme_variants:
+                        readme_content = None
+
+                        # GraphQL query to fetch the README content
+                        query = '''
+                        query($owner: String!, $name: String!, $readme_variant: String!) {
+                            repository(owner: $owner, name: $name) {
+                                object(expression: "main:$readme_variant") {  # Using "main" branch here
+                                    ... on Blob {
+                                        text
+                                    }
+                                }
+                            }
+                        }
+                        '''
+
+                        variables = {
+                            'owner': repo_owner,
+                            'name': repo_name,
+                            'readme_variant': readme_variant
+                        }
+
+                        # Execute the GraphQL request
+                        response = requests.post(
+                            'https://api.github.com/graphql',
+                            json={'query': query, 'variables': variables},
+                            headers=self.headers
+                        )
+
+                        if response.status_code == 200:
+                            data = response.json()
+
+                            # Check if 'data' is in the response
+                            if 'data' in data and 'repository' in data['data']:
+                                readme_content = data['data']['repository']['object']
+                                if readme_content and 'text' in readme_content:
+                                    self._save_readme(repo_owner, repo_name, readme_content['text'])
+                                    print(f"Successfully fetched {readme_variant} for {repo_name}")
+                                    break
+                                else:
+                                    print(f"README variant {readme_variant} not found for {repo_name}")
+                            else:
+                                print(f"No data found for {repo_name}. Response: {data}")
+                        else:
+                            print(f"Failed to fetch README for {repo_name} with status code {response.status_code}")
+
+                        if readme_content:
+                            break
+                    else:
+                        print(f"Failed to fetch any README for {repo_name}")
+
+                        
     def _parse_github_url(self, url):
         parts = url.rstrip('/').split('/')
         return parts[-2], parts[-1]
@@ -213,7 +264,7 @@ class GitHubRepoFetcher:
                         print(f"No contributors found for {repo_name}")
 
     def fetch_commits(self):
-        """Fetch commits for each repository and save to a CSV file named as owner++reponame.csv."""
+        """Fetch commits for each repository and save to a CSV file."""
         metadata_file = os.path.join(self.metadata_dir, 'combined_metadata.csv')
 
         with open(metadata_file, newline='', encoding='utf-8') as metadata_csv:
@@ -224,161 +275,356 @@ class GitHubRepoFetcher:
                 repo_owner, repo_name = self._parse_github_url(repo_url)
                 file_name = f"{repo_owner}++{repo_name}.csv"
                 commits_filename = os.path.join(self.commits_dir, file_name)
+                self.commit_counts[f"{repo_owner}-{repo_name}"] = {}
 
-                commits_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/commits"
-                commits = []
-                page = 1
+                # Initialize pagination variables
+                has_next_page = True
+                end_cursor = None
 
-                while True:
-                    response = requests.get(commits_api_url, headers=self.headers, params={'page': page, 'per_page': 100})
-                    
+                # Fetch the default branch of the repository (e.g., main or master)
+                default_branch_query = """
+                query($owner: String!, $name: String!) {
+                    repository(owner: $owner, name: $name) {
+                        defaultBranchRef {
+                            name
+                        }
+                    }
+                }
+                """
+                variables = {'owner': repo_owner, 'name': repo_name}
+                response = requests.post(
+                    'https://api.github.com/graphql',
+                    json={'query': default_branch_query, 'variables': variables},
+                    headers=self.headers
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'data' in data and 'repository' in data['data']:
+                        default_branch = data['data']['repository']['defaultBranchRef']['name']
+                        #print(f"Default branch for {repo_name}: {default_branch}") ## Good for debugging
+                    else:
+                        print(f"Failed to fetch default branch for {repo_name}. Skipping...")
+                        continue
+                else:
+                    print(f"Failed to fetch default branch for {repo_name}. Skipping...")
+                    continue
+
+                # GraphQL query to fetch commits from the repository
+                commits_query = """
+                query($owner: String!, $name: String!, $cursor: String, $branch: String!) {
+                    repository(owner: $owner, name: $name) {
+                        object(expression: $branch) {
+                            ... on Commit {
+                                history(first: 100, after: $cursor) {
+                                    edges {
+                                        node {
+                                            oid
+                                            author {
+                                                name
+                                                email
+                                                user {
+                                                    login
+                                                }
+                                            }
+                                            committedDate
+                                            message
+                                        }
+                                    }
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                """
+
+                # Loop through pages of commits until all commits are fetched
+                while has_next_page:
+                    variables = {'owner': repo_owner, 'name': repo_name, 'cursor': end_cursor, 'branch': default_branch}
+                    response = requests.post(
+                        'https://api.github.com/graphql',
+                        json={'query': commits_query, 'variables': variables},
+                        headers=self.headers
+                    )
+
                     if response.status_code == 200:
-                        page_commits = response.json()
+                        data = response.json()
+                        if 'data' in data and 'repository' in data['data']:
+                            repository_object = data['data']['repository']['object']
+                            if repository_object and 'history' in repository_object:
+                                commits = repository_object['history']['edges']
+                                page_info = repository_object['history']['pageInfo']
 
-                        if not page_commits:
-                            break  # No more commits, exit loop
-                        
-                        commits.extend(page_commits)
-                        page += 1  # Move to the next page
+                                # Update commit counts for contributors
+                                for commit in commits:
+                                    author_login = commit['node']['author']['user']['login'] if commit['node']['author']['user'] else 'N/A'
+                                    author_name = commit['node']['author']['name'] if commit['node']['author'] else 'N/A'
+                                    if author_login:
+                                        if author_login not in self.commit_counts[f"{repo_owner}-{repo_name}"]:
+                                            self.commit_counts[f"{repo_owner}-{repo_name}"][author_login] = 0
+                                        self.commit_counts[f"{repo_owner}-{repo_name}"][author_login] += 1
+                                    else:
+                                        if author_name not in self.commit_counts[f"{repo_owner}-{repo_name}"]:
+                                            self.commit_counts[f"{repo_owner}-{repo_name}"][author_name] = 0
+                                        self.commit_counts[f"{repo_owner}-{repo_name}"][author_name] += 1
+                                
+
+
+                                # Save commits to CSV file
+                                with open(commits_filename, 'a', newline='', encoding='utf-8') as commits_csv:
+                                    fieldnames = ['commit_sha', 'commit_author_name', 'commit_author_email', 'commit_message', 'commit_date', 'login']
+                                    writer = csv.DictWriter(commits_csv, fieldnames=fieldnames)
+
+                                    if commits_csv.tell() == 0:  # Write header only if it's the first write
+                                        writer.writeheader()
+
+                                    for commit in commits:
+                                        commit_data = {
+                                            'commit_sha': commit['node']['oid'],
+                                            'commit_author_name': commit['node']['author']['name'],
+                                            'commit_author_email': commit['node']['author']['email'],
+                                            'commit_message': commit['node']['message'],
+                                            'commit_date': commit['node']['committedDate'],
+                                            'login': author_login
+                                        }
+                                        writer.writerow(commit_data)
+
+                                # Handle pagination: check if there are more commits to fetch
+                                has_next_page = page_info['hasNextPage']
+                                end_cursor = page_info['endCursor']
+                            else:
+                                print(f"No commit history found for {repo_name}")
+                                break
+                        else:
+                            print(f"Error: No commit data found for {repo_name}")
+                            break
                     else:
                         print(f"Failed to fetch commits for {repo_name}: {response.status_code}")
-                        break  # Exit loop on failure
-                
-                # Open the CSV file to write the commits' data
-                with open(commits_filename, 'w', newline='', encoding='utf-8') as commits_csv:
-                    if commits:
-                        fieldnames = ['repo_owner', 'repo_name', 'commit_sha', 'commit_author', 'commit_message', 'commit_date'] + list(commits[0].keys())
-                        writer = csv.DictWriter(commits_csv, fieldnames=fieldnames)
-                        writer.writeheader()
-
-                        for commit in commits:
-                            commit_data = {
-                                'repo_owner': repo_owner,
-                                'repo_name': repo_name,
-                                'commit_sha': commit.get('sha'),
-                                'commit_author': commit['commit']['author'].get('name'),
-                                'commit_message': commit['commit'].get('message'),
-                                'commit_date': commit['commit']['author'].get('date')
-                            }
-                            commit_data.update(commit)
-                            writer.writerow(commit_data)
-                    else:
-                        print(f"No commits found for {repo_name}")
-
+                        break
 
     def fetch_releases(self):
-        """Fetch detailed information about releases in the repositories."""
+        """Fetch detailed information about releases using GitHub GraphQL API."""
         metadata_file = os.path.join(self.metadata_dir, 'combined_metadata.csv')
+
         with open(metadata_file, newline='', encoding='utf-8') as metadata_csv:
             reader = csv.DictReader(metadata_csv)
+
             for row in tqdm(reader, desc="Fetching releases"):
                 repo_url = row['html_url']
                 repo_owner, repo_name = self._parse_github_url(repo_url)
                 releases_filename = os.path.join(self.releases_dir, f"{repo_owner}++{repo_name}.csv")
-                releases_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases"
-                releases = []
-                page = 1
 
-                while True:
-                    response = requests.get(releases_api_url, headers=self.headers, params={'page': page, 'per_page': 100})
-                    
-                    if response.status_code == 200:
-                        page_releases = response.json()
+                # Initialize pagination
+                has_next_page = True
+                end_cursor = None
 
-                        if not page_releases:
-                            break  # No more releases, exit loop
-                        
-                        releases.extend(page_releases)
-                        page += 1  # Move to the next page
-                    else:
-                        print(f"Failed to fetch releases for {repo_name}: {response.status_code}")
-                        break  # Exit loop on failure
-                
-                # Open the CSV file to write the releases' data
                 with open(releases_filename, 'w', newline='', encoding='utf-8') as releases_csv:
-                    if releases:
-                        # Define fieldnames based on expected keys
-                        fieldnames = ['id', 'tag_name', 'name', 'created_at', 'published_at', 'body', 'html_url']
-                        writer = csv.DictWriter(releases_csv, fieldnames=fieldnames)
-                        writer.writeheader()
+                    release_writer = None
 
-                        for release in releases:
-                            # Create a dictionary with only the relevant fields
-                            release_data = {
-                                'id': release.get('id', ''),
-                                'tag_name': release.get('tag_name', ''),
-                                'name': release.get('name', ''),
-                                'created_at': release.get('created_at', ''),
-                                'published_at': release.get('published_at', ''),
-                                'body': release.get('body', ''),
-                                'html_url': release.get('html_url', '')
+                    while has_next_page:
+                        # GraphQL query to fetch releases
+                        query = '''
+                        {
+                            repository(owner: "%s", name: "%s") {
+                                releases(first: 100, after: "%s") {
+                                    edges {
+                                        node {
+                                            id
+                                            tagName   
+                                            name
+                                            createdAt
+                                            publishedAt
+                                            author {
+                                                login 
+                                                name
+                                            }
+                                        }
+                                    }
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
+                                }
                             }
-                            # Write only the data that matches the fieldnames
-                            writer.writerow(release_data)
-                    else:
-                        print(f"No releases found for {repo_name}")
+                        }
+                        ''' % (repo_owner, repo_name, end_cursor if end_cursor else "")
 
+
+                        # Make the request
+                        response = requests.post(self.graphql_url, headers=self.headers, json={'query': query})
+
+                        if response.status_code == 200:
+                            data = response.json()
+
+                            # Handle errors in the response
+                            if 'errors' in data:
+                                print(f"GraphQL query failed with errors: {data['errors']}")
+                                break
+
+                            # Fetch release edges
+                            if 'data' in data:
+                                release_edges = data['data']['repository']['releases']['edges']
+                                page_info = data['data']['repository']['releases']['pageInfo']
+
+                                if not release_writer:
+                                    fieldnames = ['id', 'tag_name', 'name', 'created_at', 'published_at',  'author_login', 'author_name']
+                                    release_writer = csv.DictWriter(releases_csv, fieldnames=fieldnames)
+                                    release_writer.writeheader()
+
+                                # Write releases to CSV
+                                for release in release_edges:
+                                    release_data = release['node']
+                                    # Check if author data exists, if not, set default values
+                                    author_login = release_data['author']['login'] if release_data['author'] else 'N/A'
+                                    author_name = release_data['author']['name'] if release_data['author'] else 'N/A'
+
+                                    release_data = {
+                                        'id': release['node']['id'],
+                                        'tag_name': release['node']['tagName'],
+                                        'name': release['node']['name'],
+                                        'created_at': release['node']['createdAt'],
+                                        'published_at': release['node']['publishedAt'],
+                                        'author_login': author_login,
+                                        'author_name': author_name
+                                    }
+                                    release_writer.writerow(release_data)
+
+                                # Handle pagination
+                                has_next_page = page_info['hasNextPage']
+                                end_cursor = page_info['endCursor']
+                            else:
+                                print(f"Unexpected response structure: {data}")
+                                break
+                        else:
+                            print(f"GraphQL request failed for {repo_name} with status code {response.status_code}")
+                            break
 
 
     def fetch_pulls(self):
-        """Fetch detailed information about pull requests in the repositories."""
+        """Fetch detailed information about pull requests using GitHub GraphQL API."""
         metadata_file = os.path.join(self.metadata_dir, 'combined_metadata.csv')
-
+        
         with open(metadata_file, newline='', encoding='utf-8') as metadata_csv:
             reader = csv.DictReader(metadata_csv)
 
             for row in tqdm(reader, desc="Fetching pull requests"):
                 repo_url = row['html_url']
                 repo_owner, repo_name = self._parse_github_url(repo_url)
-                pulls_filename = f"{repo_owner}++{repo_name}.csv"
-                pulls_filepath = os.path.join(self.pulls_dir, pulls_filename)
+                pulls_filename = os.path.join(self.pulls_dir, f"{repo_owner}++{repo_name}.csv")
+                self.pr_counts[f"{repo_owner}-{repo_name}"] = {}  # Dictionary to store commit count per contributor
 
-                pulls_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls"
-                pulls_data = []
-                page = 1
+                # Initialize pagination
+                has_next_page = True
+                end_cursor = None
 
-                while True:
-                    response = requests.get(pulls_api_url, headers=self.headers, params={'page': page, 'per_page': 100})
-                    
-                    if response.status_code == 200:
-                        page_pulls = response.json()
+                with open(pulls_filename, 'w', newline='', encoding='utf-8') as pulls_csv:
+                    pull_writer = None
 
-                        if not page_pulls:
-                            break  # No more pull requests, exit loop
-                        
-                        pulls_data.extend(page_pulls)
-                        page += 1  # Move to the next page
-                    else:
-                        print(f"Failed to fetch pull requests for {repo_name}: {response.status_code}")
-                        break  # Exit loop on failure
-                
-                # Open the CSV file to write the pulls' data
-                with open(pulls_filepath, 'w', newline='', encoding='utf-8') as csvfile:
-                    if pulls_data:
-                        fieldnames = ['pull_number', 'title', 'state', 'created_at', 'updated_at', 'closed_at', 'merged_at', 'user', 'html_url'] + list(pulls_data[0].keys())
-                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                        writer.writeheader()
-
-                        for pull in pulls_data:
-                            pull_data = {
-                                'pull_number': pull['number'],
-                                'title': pull['title'],
-                                'state': pull['state'],
-                                'created_at': pull['created_at'],
-                                'updated_at': pull.get('updated_at', ''),
-                                'closed_at': pull.get('closed_at', ''),
-                                'merged_at': pull.get('merged_at', ''),
-                                'user': pull['user']['login'],
-                                'html_url': pull['html_url']
+                    while has_next_page:
+                        # GraphQL query to fetch pull requests
+                        query = '''
+                        {
+                            repository(owner: "%s", name: "%s") {
+                                pullRequests(first: 100, after: "%s") {
+                                    edges {
+                                        node {
+                                            id
+                                            title
+                                            state
+                                            createdAt
+                                            updatedAt
+                                            closedAt
+                                            mergedAt
+                                            body
+                                            url
+                                            author {
+                                                login
+                                                    ... on User {
+                                                    name
+                                                }
+                                            }
+                                        }
+                                    }
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
+                                }
                             }
-                            pull_data.update(pull)
-                            writer.writerow(pull_data)
-                    else:
-                        print(f"No pull requests found for {repo_name}")
+                        }
+                        ''' % (repo_owner, repo_name, end_cursor if end_cursor else "")
+
+                        # Make the request
+                        response = requests.post(self.graphql_url, headers=self.headers, json={'query': query})
+
+                        if response.status_code == 200:
+                            data = response.json()
+
+                            # Handle errors
+                            if 'errors' in data:
+                                print(f"GraphQL query failed with errors: {data['errors']}")
+                                break
+
+                            # Fetch pull request edges
+                            if 'data' in data:
+                                pull_edges = data['data']['repository']['pullRequests']['edges']
+                                page_info = data['data']['repository']['pullRequests']['pageInfo']
+
+                                # Update PR counts for contributors
+                                for pull in pull_edges:
+                                    pr_author_login = pull['node']['author']['login'] if pull['node']['author'] else 'N/A'
+                                    pr_author_name = pull['node']['author']['name'] if pull['node']['author'] else 'N/A'
+                                    if pr_author_login:
+                                        if pr_author_login not in self.pr_counts[f"{repo_owner}-{repo_name}"]:
+                                            self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_login] = 0
+                                        self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_login] += 1
+                                    else:
+                                        if pr_author_name not in self.pr_counts[f"{repo_owner}-{repo_name}"]:
+                                            self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_name] = 0
+                                        self.pr_counts[f"{repo_owner}-{repo_name}"][pr_author_name] += 1                               
+
+
+                                if not pull_writer:
+                                    fieldnames = ['pull_number', 'title', 'state', 'created_at', 'updated_at', 'closed_at', 'merged_at', 'user', 'url']
+                                    pull_writer = csv.DictWriter(pulls_csv, fieldnames=fieldnames)
+                                    pull_writer.writeheader()
+
+                                # Write pull requests to CSV
+                                for pull in pull_edges:
+                                    # Check if author data exists, if not, set default values
+                                    author_login = pull['node']['author']['login'] if pull['node']['author'] else 'N/A'
+                                    #author_name = issue_data['author']['name'] if issue_data['author'] else 'N/A'
+
+                                    pull_data = {
+                                        'pull_number': pull['node']['id'],
+                                        'title': pull['node']['title'],
+                                        'state': pull['node']['state'],
+                                        'created_at': pull['node']['createdAt'],
+                                        'updated_at': pull['node']['updatedAt'],
+                                        'closed_at': pull['node']['closedAt'],
+                                        'merged_at': pull['node']['mergedAt'],
+                                        'user':author_login,
+                                        'url': pull['node']['url']
+                                    }
+                                    pull_writer.writerow(pull_data)
+
+                                # Handle pagination
+                                has_next_page = page_info['hasNextPage']
+                                end_cursor = page_info['endCursor']
+                            else:
+                                print(f"Unexpected response structure: {data}")
+                                break
+                        else:
+                            print(f"GraphQL request failed for {repo_name} with status code {response.status_code}")
+                            break
 
 
     def fetch_issues(self):
-        """Fetch detailed information about issues in the repositories."""
+        """Fetch detailed information about issues using GitHub GraphQL API."""
         metadata_file = os.path.join(self.metadata_dir, 'combined_metadata.csv')
 
         with open(metadata_file, newline='', encoding='utf-8') as metadata_csv:
@@ -387,79 +633,95 @@ class GitHubRepoFetcher:
             for row in tqdm(reader, desc="Fetching issues"):
                 repo_url = row['html_url']
                 repo_owner, repo_name = self._parse_github_url(repo_url)
-                issues_filename = f"{repo_owner}++{repo_name}.csv"
-                issues_filepath = os.path.join(self.issues_dir, issues_filename)
+                issues_filename = os.path.join(self.issues_dir, f"{repo_owner}++{repo_name}.csv")
 
-                issues_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/issues"
-                issues_data = []
-                page = 1
+                # Initialize pagination
+                has_next_page = True
+                end_cursor = None
 
-                while True:
-                    response = requests.get(issues_api_url, headers=self.headers, params={'page': page, 'per_page': 100})
-                    
-                    if response.status_code == 200:
-                        page_issues = response.json()
+                with open(issues_filename, 'w', newline='', encoding='utf-8') as issues_csv:
+                    issue_writer = None
 
-                        if not page_issues:
-                            break  # No more issues, exit loop
-                        
-                        issues_data.extend(page_issues)
-                        page += 1  # Move to the next page
-                    else:
-                        print(f"Failed to fetch issues for {repo_name}: {response.status_code}")
-                        break  # Exit loop on failure
-                
-                # Define fieldnames based on all keys present in issue data
-                fieldnames = [
-                    'url', 'repository_url', 'labels_url', 'comments_url', 'events_url',
-                    'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels',
-                    'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments',
-                    'created_at', 'updated_at', 'closed_at', 'author_association',
-                    'active_lock_reason', 'body', 'reactions', 'timeline_url',
-                    'performed_via_github_app', 'state_reason'
-                ]
-
-                # Open the CSV file to write the issues' data
-                with open(issues_filepath, 'w', newline='', encoding='utf-8') as csvfile:
-                    if issues_data:
-                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                        writer.writeheader()
-
-                        for issue in issues_data:
-                            # Prepare issue_data with all fields, use get() for optional fields
-                            issue_data = {
-                                'url': issue.get('url', ''),
-                                'repository_url': issue.get('repository_url', ''),
-                                'labels_url': issue.get('labels_url', ''),
-                                'comments_url': issue.get('comments_url', ''),
-                                'events_url': issue.get('events_url', ''),
-                                'html_url': issue.get('html_url', ''),
-                                'id': issue.get('id', ''),
-                                'node_id': issue.get('node_id', ''),
-                                'number': issue.get('number', ''),
-                                'title': issue.get('title', ''),
-                                'user': issue.get('user', ''),
-                                'labels': issue.get('labels', ''),
-                                'state': issue.get('state', ''),
-                                'locked': issue.get('locked', ''),
-                                'assignee': issue.get('assignee', ''),
-                                'assignees': issue.get('assignees', ''),
-                                'milestone': issue.get('milestone', ''),
-                                'comments': issue.get('comments', ''),
-                                'created_at': issue.get('created_at', ''),
-                                'updated_at': issue.get('updated_at', ''),
-                                'closed_at': issue.get('closed_at', ''),
-                                'author_association': issue.get('author_association', ''),
-                                'active_lock_reason': issue.get('active_lock_reason', ''),
-                                'body': issue.get('body', ''),
-                                'reactions': issue.get('reactions', ''),
-                                'timeline_url': issue.get('timeline_url', ''),
-                                'performed_via_github_app': issue.get('performed_via_github_app', ''),
-                                'state_reason': issue.get('state_reason', '')
+                    while has_next_page:
+                        # GraphQL query to fetch issues
+                        query = '''
+                        {
+                            repository(owner: "%s", name: "%s") {
+                                issues(first: 100, after: "%s") {
+                                    edges {
+                                        node {
+                                            id
+                                            title
+                                            state
+                                            createdAt
+                                            updatedAt
+                                            closedAt
+                                            body
+                                            url
+                                            author {
+                                            login 
+                                        }
+                                        }
+                                    }
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
+                                }
                             }
-                            writer.writerow(issue_data)
-                    else:
-                        print(f"No issues found for {repo_name}")
+                        }
+                        ''' % (repo_owner, repo_name, end_cursor if end_cursor else "")
+
+                        # Make the request
+                        response = requests.post(self.graphql_url, headers=self.headers, json={'query': query})
+
+                        if response.status_code == 200:
+                            data = response.json()
+
+                            # Handle errors
+                            if 'errors' in data:
+                                print(f"GraphQL query failed with errors: {data['errors']}")
+                                break
+
+                            # Fetch issue edges
+                            if 'data' in data:
+                                issue_edges = data['data']['repository']['issues']['edges']
+                                page_info = data['data']['repository']['issues']['pageInfo']
+
+                                if not issue_writer:
+                                    fieldnames = ['id', 'title', 'state', 'created_at', 'updated_at', 'closed_at', 'body', 'user', 'url']
+                                    issue_writer = csv.DictWriter(issues_csv, fieldnames=fieldnames)
+                                    issue_writer.writeheader()
+
+                                # Write issues to CSV
+                                for issue in issue_edges:
+                                    # Check if author data exists, if not, set default values
+                                    author_login = issue['node']['author']['login'] if issue['node']['author'] else 'N/A'
+                                    #author_name = issue_data['author']['name'] if issue_data['author'] else 'N/A'
+
+                                    issue_data = {
+                                        'id': issue['node']['id'],
+                                        'title': issue['node']['title'],
+                                        'state': issue['node']['state'],
+                                        'created_at': issue['node']['createdAt'],
+                                        'updated_at': issue['node']['updatedAt'],
+                                        'closed_at': issue['node']['closedAt'],
+                                        'body': issue['node']['body'],
+                                        'user': author_login,
+                                        #'name':author_name,
+                                        'url': issue['node']['url']
+                                    }
+                                    issue_writer.writerow(issue_data)
+
+                                # Handle pagination
+                                has_next_page = page_info['hasNextPage']
+                                end_cursor = page_info['endCursor']
+                            else:
+                                print(f"Unexpected response structure: {data}")
+                                break
+                        else:
+                            print(f"GraphQL request failed for {repo_name} with status code {response.status_code}")
+                            break
 
 
     def fetch_stargazers(self):
@@ -478,51 +740,79 @@ class GitHubRepoFetcher:
                 # Ensure the directory exists
                 os.makedirs(self.stargazers_dir, exist_ok=True)
 
-                stargazers_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/stargazers"
-                stargazers = []
-                page = 1
+                # Initialize variables for pagination
+            has_next_page = True
+            end_cursor = None  # To store the cursor for the next page
 
-                while True:
-                    response = requests.get(stargazers_api_url, headers=self.headers, params={'page': page, 'per_page': 100})
-                    
-                    if response.status_code == 200:
-                        page_stargazers = response.json()
+            # Open the CSV file in append mode to write stargazers incrementally
+            with open(stargazers_filename, 'w', newline='', encoding='utf-8') as stargazers_csv:
+                stargazer_writer = None  # We'll initialize the writer after the first batch
 
-                        if not page_stargazers:
-                            break  # No more stargazers, exit loop
-                        
-                        stargazers.extend(page_stargazers)
-                        page += 1  # Move to the next page
-                    else:
-                        print(f"Failed to fetch stargazers for {repo_name}: {response.status_code}")
-                        break  # Exit loop on failure
-                
-                # Open the CSV file to write the stargazers' data
-                with open(stargazers_filename, 'w', newline='', encoding='utf-8') as stargazers_csv:
-                    if stargazers:
-                        # Define fieldnames based on expected keys
-                        fieldnames = ['login', 'id', 'node_id', 'avatar_url', 'url', 'html_url', 'type']
-                        writer = csv.DictWriter(stargazers_csv, fieldnames=fieldnames)
-                        writer.writeheader()
-
-                        for stargazer in stargazers:
-                            # Create a dictionary with only the relevant fields
-                            stargazer_data = {
-                                'login': stargazer.get('login', ''),
-                                'id': stargazer.get('id', ''),
-                                'node_id': stargazer.get('node_id', ''),
-                                'avatar_url': stargazer.get('avatar_url', ''),
-                                'url': stargazer.get('url', ''),
-                                'html_url': stargazer.get('html_url', ''),
-                                'type': stargazer.get('type', '')
+                while has_next_page:
+                    # Update the query to include the endCursor for pagination
+                    query = '''
+                    {
+                        repository(owner: "%s", name: "%s") {
+                            stargazers(first: 100, after: "%s") {
+                                edges {
+                                    node {
+                                        login
+                                        avatarUrl
+                                        url
+                                    }
+                                    starredAt
+                                }
+                                pageInfo {
+                                    hasNextPage
+                                    endCursor
+                                }
                             }
-                            # Write only the data that matches the fieldnames
-                            writer.writerow(stargazer_data)
+                        }
+                    }
+                    ''' % (repo_owner, repo_name, end_cursor if end_cursor else "")
+
+                    # Make the API request
+                    response = requests.post(self.graphql_url, headers=self.headers, json={'query': query})
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        stargazer_edges = data['data']['repository']['stargazers']['edges']
+                        page_info = data['data']['repository']['stargazers']['pageInfo']
+
+                        if not stargazer_edges:
+                            print(f"No stargazers found for {repo_name}.")
+                            break  # No more stargazers, exit loop
+
+                        # Initialize the CSV writer with fieldnames after fetching the first batch
+                        if not stargazer_writer:
+                            fieldnames = ['login', 'avatarUrl', 'url', 'starredAt']
+                            stargazer_writer = csv.DictWriter(stargazers_csv, fieldnames=fieldnames)
+                            stargazer_writer.writeheader()  # Write header only once
+
+                        # Write stargazer data incrementally
+                        for stargazer in stargazer_edges:
+                            node = stargazer['node']
+                            starred_at = stargazer['starredAt']  # Get the starredAt date
+                            stargazer_data = {
+                                'login': node['login'],
+                                'avatarUrl': node['avatarUrl'],
+                                'url': node['url'],
+                                'starredAt': starred_at
+                            }
+
+                            stargazer_writer.writerow(stargazer_data)  # Write to CSV
+
+                        # Update pagination info
+                        has_next_page = page_info['hasNextPage']
+                        end_cursor = page_info['endCursor']  # Set the cursor for the next page
+
+                        #print(f"Fetched {len(stargazer_edges)} stargazers. {'More pages to fetch' if has_next_page else 'No more pages.'}")
                     else:
-                        print(f"No stargazers found for {repo_name}")
+                        print(f"GraphQL request failed for {repo_name} with status code {response.status_code}")
+                        break  # Exit loop on failure
 
     def fetch_forks(self):
-        """Fetch forks for each repository and save to a CSV file named as owner++reponame_forks.csv."""
+        """Fetch forks for each repository using GraphQL and save to a CSV file named as owner++reponame_forks.csv."""
         metadata_file = os.path.join(self.metadata_dir, 'combined_metadata.csv')
 
         with open(metadata_file, newline='', encoding='utf-8') as metadata_csv:
@@ -537,50 +827,86 @@ class GitHubRepoFetcher:
                 # Ensure the directory exists
                 os.makedirs(self.forks_dir, exist_ok=True)
 
-                forks_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/forks"
-                forks = []
-                page = 1
+                # Initialize variables for pagination
+                has_next_page = True
+                end_cursor = None  # To store the cursor for the next page
 
-                while True:
-                    response = requests.get(forks_api_url, headers=self.headers, params={'page': page, 'per_page': 100})
-                    
-                    if response.status_code == 200:
-                        page_forks = response.json()
-
-                        if not page_forks:
-                            break  # No more forks, exit loop
-                        
-                        forks.extend(page_forks)
-                        page += 1  # Move to the next page
-                    else:
-                        print(f"Failed to fetch forks for {repo_name}: {response.status_code}")
-                        break  # Exit loop on failure
-                
-                # Open the CSV file to write the forks' data
+                # Open the CSV file in append mode to write forks incrementally
                 with open(forks_filename, 'w', newline='', encoding='utf-8') as forks_csv:
-                    if forks:
-                        fieldnames = ['repo_owner', 'repo_name', 'fork_id', 'fork_name', 'fork_full_name', 'fork_owner', 'fork_url', 'fork_created_at', 'fork_updated_at']
-                        writer = csv.DictWriter(forks_csv, fieldnames=fieldnames)
-                        writer.writeheader()
+                    forks_writer = None  # Initialize writer after first batch
 
-                        for fork in forks:
-                            fork_data = {
-                                'repo_owner': repo_owner,
-                                'repo_name': repo_name,
-                                'fork_id': fork.get('id'),
-                                'fork_name': fork.get('name'),
-                                'fork_full_name': fork.get('full_name'),
-                                'fork_owner': fork.get('owner', {}).get('login', ''),  # owner is a dict
-                                'fork_url': fork.get('html_url'),
-                                'fork_created_at': fork.get('created_at'),
-                                'fork_updated_at': fork.get('updated_at')
+                    while has_next_page:
+                        # GraphQL query to fetch forks with pagination
+                        query = '''
+                        {
+                            repository(owner: "%s", name: "%s") {
+                                forks(first: 100, after: "%s") {
+                                    edges {
+                                        node {
+                                            id
+                                            name
+                                            nameWithOwner  # Corrected to nameWithOwner
+                                            owner {
+                                                login
+                                            }
+                                            createdAt
+                                            updatedAt
+                                            url
+                                        }
+                                    }
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
+                                }
                             }
-                            writer.writerow(fork_data)
-                    else:
-                        print(f"No forks found for {repo_name}")
+                        }
+                        ''' % (repo_owner, repo_name, end_cursor if end_cursor else "")
+
+                        # Make the GraphQL request
+                        response = requests.post(self.graphql_url, headers=self.headers, json={'query': query})
+
+                        if response.status_code == 200:
+                            data = response.json()
+                            fork_edges = data['data']['repository']['forks']['edges']
+                            page_info = data['data']['repository']['forks']['pageInfo']
+
+                            if not fork_edges:
+                                print(f" No forks found for {repo_name}.")
+                                break  # No more forks, exit loop
+
+                            # Initialize the CSV writer with fieldnames after fetching the first batch
+                            if not forks_writer:
+                                fieldnames = ['fork_id', 'fork_name', 'fork_full_name', 'fork_owner', 'fork_url', 'fork_created_at', 'fork_updated_at']
+                                forks_writer = csv.DictWriter(forks_csv, fieldnames=fieldnames)
+                                forks_writer.writeheader()  # Write header only once
+
+                            # Write fork data incrementally
+                            for fork in fork_edges:
+                                node = fork['node']
+                                fork_data = {
+                                    'fork_id': node['id'],
+                                    'fork_name': node['name'],
+                                    'fork_full_name': node['nameWithOwner'],
+                                    'fork_owner': node['owner']['login'],
+                                    'fork_url': node['url'],
+                                    'fork_created_at': node['createdAt'],
+                                    'fork_updated_at': node['updatedAt']
+                                }
+                                forks_writer.writerow(fork_data)
+
+                            # Update pagination info
+                            has_next_page = page_info['hasNextPage']
+                            end_cursor = page_info['endCursor']  # Set the cursor for the next page
+
+                            #print(f"Fetched {len(fork_edges)} forks. {'More pages to fetch' if has_next_page else 'No more pages.'}")
+                        else:
+                            print(f"GraphQL request failed for {repo_name} with status code {response.status_code}")
+                            break  # Exit loop on failure
+
 
     def fetch_subscribers(self):
-        """Fetch subscribers (watchers) for each repository and save to a CSV file named as owner++reponame_subscribers.csv."""
+        """Fetch subscribers (watchers) for each repository using GraphQL and save to a CSV file named as owner++reponame_subscribers.csv."""
         metadata_file = os.path.join(self.metadata_dir, 'combined_metadata.csv')
 
         with open(metadata_file, newline='', encoding='utf-8') as metadata_csv:
@@ -595,43 +921,73 @@ class GitHubRepoFetcher:
                 # Ensure the directory exists
                 os.makedirs(self.subscribers_dir, exist_ok=True)
 
-                subscribers_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/subscribers"
-                subscribers = []
-                page = 1
+                # Initialize variables for pagination
+                has_next_page = True
+                end_cursor = None  # To store the cursor for the next page
 
-                while True:
-                    response = requests.get(subscribers_api_url, headers=self.headers, params={'page': page, 'per_page': 100})
-                    
-                    if response.status_code == 200:
-                        page_subscribers = response.json()
-
-                        if not page_subscribers:
-                            break  # No more subscribers, exit loop
-                        
-                        subscribers.extend(page_subscribers)
-                        page += 1  # Move to the next page
-                    else:
-                        print(f"Failed to fetch subscribers for {repo_name}: {response.status_code}")
-                        break  # Exit loop on failure
-                
-                # Open the CSV file to write the subscribers' data
+                # Open the CSV file in append mode to write subscribers incrementally
                 with open(subscribers_filename, 'w', newline='', encoding='utf-8') as subscribers_csv:
-                    if subscribers:
-                        fieldnames = ['repo_owner', 'repo_name', 'subscriber_login', 'subscriber_id', 'subscriber_url']
-                        writer = csv.DictWriter(subscribers_csv, fieldnames=fieldnames)
-                        writer.writeheader()
+                    subscribers_writer = None  # Initialize writer after first batch
 
-                        for subscriber in subscribers:
-                            subscriber_data = {
-                                'repo_owner': repo_owner,
-                                'repo_name': repo_name,
-                                'subscriber_login': subscriber.get('login'),
-                                'subscriber_id': subscriber.get('id'),
-                                'subscriber_url': subscriber.get('html_url')
+                    while has_next_page:
+                        # GraphQL query to fetch subscribers (watchers) with pagination
+                        query = '''
+                        {
+                            repository(owner: "%s", name: "%s") {
+                                watchers(first: 100, after: "%s") {
+                                    edges {
+                                        node {
+                                            login
+                                            id
+                                            url
+                                        }
+                                    }
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
+                                }
                             }
-                            writer.writerow(subscriber_data)
-                    else:
-                        print(f"No subscribers found for {repo_name}")
+                        }
+                        ''' % (repo_owner, repo_name, end_cursor if end_cursor else "")
+
+                        # Make the GraphQL request
+                        response = requests.post(self.graphql_url, headers=self.headers, json={'query': query})
+
+                        if response.status_code == 200:
+                            data = response.json()
+                            subscriber_edges = data['data']['repository']['watchers']['edges']
+                            page_info = data['data']['repository']['watchers']['pageInfo']
+
+                            if not subscriber_edges:
+                                print(f" No subscribers found for {repo_name}.")
+                                break  # No more subscribers, exit loop
+
+                            # Initialize the CSV writer with fieldnames after fetching the first batch
+                            if not subscribers_writer:
+                                fieldnames = ['subscriber_login', 'subscriber_id', 'subscriber_url']
+                                subscribers_writer = csv.DictWriter(subscribers_csv, fieldnames=fieldnames)
+                                subscribers_writer.writeheader()  # Write header only once
+
+                            # Write subscriber data incrementally
+                            for subscriber in subscriber_edges:
+                                node = subscriber['node']
+                                subscriber_data = {
+                                    'subscriber_login': node['login'],
+                                    'subscriber_id': node['id'],
+                                    'subscriber_url': node['url']
+                                }
+                                subscribers_writer.writerow(subscriber_data)
+
+                            # Update pagination info
+                            has_next_page = page_info['hasNextPage']
+                            end_cursor = page_info['endCursor']  # Set the cursor for the next page
+
+                            #print(f"Fetched {len(subscriber_edges)} subscribers. {'More pages to fetch' if has_next_page else 'No more pages.'}")
+                        else:
+                            print(f"GraphQL request failed for {repo_name} with status code {response.status_code}")
+                            break  # Exit loop on failure
+
 
     def analyze(self, analyze_flag):
         self.analyze_flag = analyze_flag

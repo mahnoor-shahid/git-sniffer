@@ -1,5 +1,6 @@
 # **Git Sniffer**
 
+<<<<<<< HEAD
 **Git Sniffer** is a Python package designed to fetch, analyze, and explore GitHub repository data with ease. Leveraging the power of GitHub's GraphQL API, Git Sniffer simplifies the process of retrieving critical repository insights, contributors' activity, and workflows for developers and researchers.
 
 ---
@@ -28,3 +29,5 @@ Follow these steps to create one:
 Go to your GitHub Settings.
 Generate a new token with the required permissions (read-only access is sufficient).
 Copy the token to use with Git Sniffer.
+=======
+>>>>>>> 9cef40856b205149f0b5ac96aacfa52a4b441f09
