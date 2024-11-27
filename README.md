@@ -15,9 +15,10 @@
         <img src="https://img.shields.io/badge/numpy-1.20.3-yellowgreen" /></a>
 <a href="https://github.com/mahnoor-shahid/git-sniffer" alt="pandas">
         <img src="https://img.shields.io/badge/pandas-1.2.4-yellowgreen" /></a>
-<a href="https://github.com/mahnoor-shahid/git-sniffer" alt="dask">
+        
+<!--<a href="https://github.com/mahnoor-shahid/git-sniffer" alt="dask">
         <img src="https://img.shields.io/badge/dask-2022.05.02-red" /></a>  <a href="https://github.com/mahnoor-shahid/git-sniffer" alt="scikit-learn">
-        <img src="https://img.shields.io/badge/scikit--learn-1.2.1-yellowgreen" /></a>
+        <img src="https://img.shields.io/badge/scikit--learn-1.2.1-yellowgreen" /></a> -->
 
 <!-- ![GitHub issues](https://img.shields.io/github/issues-raw/mahnoor-shahid/git-sniffer) -->
 <!--![GitHub pull requests](https://img.shields.io/github/issues-pr/mahnoor-shahid/git-sniffer) -->
