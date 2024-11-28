@@ -4,6 +4,4 @@ __pycache__/
 .git
 .vscode/
 data/*
-models/*
-experiments/*
 app/__pycache__/*

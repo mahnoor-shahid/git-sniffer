@@ -13,7 +13,7 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--max_repos', type=int, default=10, help='Maximum number of repositories to fetch per term')
     # parser.add_argument('-r', '--readme', type=bool, default=False, help='True or 1 if README files are needed else False or 0')
     parser.add_argument('-a', '--analyze', type=bool, default=False, help='True or 1 if analysis is needed else False or 0')
-
+    local_flag = False
     args = parser.parse_args()
     #nltk.data.path.extend([os.path.join(sys.prefix, 'nltk_data'), 
     #                      os.path.join(sys.prefix, 'Lib', 'nltk_data'),
@@ -40,14 +40,14 @@ if __name__ == '__main__':
 
     fetcher = GitHubRepoFetcher(args.token)
     fetcher.fetch_repos(args.search, args.max_repos)
+    fetcher.fetch_stargazers()
+    fetcher.fetch_forks()
+    fetcher.fetch_subscribers()
     fetcher.fetch_contributors()
     fetcher.fetch_commits()
     fetcher.fetch_releases()
     fetcher.fetch_issues()
     fetcher.fetch_pulls()
-    fetcher.fetch_stargazers()
-    fetcher.fetch_forks()
-    fetcher.fetch_subscribers()
     # fetcher.fetch_readme(args.readme)
     if local_flag == True:
         fetcher.clone_repositories()
