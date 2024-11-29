@@ -49,6 +49,7 @@ if __name__ == '__main__':
     fetcher.fetch_issues()
     fetcher.fetch_pulls()
     # fetcher.fetch_readme(args.readme)
+    
     if local_flag == True:
         fetcher.clone_repositories()
     print(f"Number of Repositories Processed: {len(fetcher.urls)}")
